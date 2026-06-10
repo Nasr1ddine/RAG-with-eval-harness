@@ -1,3 +1,6 @@
+from typing import Self
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,7 +11,7 @@ class Settings(BaseSettings):
     ENV: str = "production"
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
-
+    PORT: int | None = None
     # LLM
     OPENAI_API_KEY: str
     LLM_MODEL: str = "gpt-4o-mini"
@@ -48,6 +51,12 @@ class Settings(BaseSettings):
     # Observability
     LOG_LEVEL: str = "INFO"
     ENABLE_TRACING: bool = True
+
+    @model_validator(mode="after")
+    def resolve_listening_port(self) -> Self:
+        if self.PORT is not None:
+            self.API_PORT = self.PORT
+        return self
 
 
 # BaseSettings fills required values from environment variables at runtime.

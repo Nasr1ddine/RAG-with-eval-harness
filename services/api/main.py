@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI
 from prometheus_client import CONTENT_TYPE_LATEST
 
@@ -26,6 +28,8 @@ from services.api.retrieval import HybridRetriever, ParentExpander
 
 configure_logging(service_name="api", log_level=settings.LOG_LEVEL, environment=settings.ENV)
 logger = structlog.get_logger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -62,6 +66,14 @@ app.add_middleware(
     service_name="api",
     default_tenant_id=settings.DEFAULT_TENANT_ID,
 )
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.post("/query", response_model=QueryResponse)
