@@ -1,0 +1,232 @@
+name: Eval CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "eval/**"
+      - "infra/docker-compose.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "eval/**"
+      - "infra/docker-compose.yml"
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Ruff check services
+        run: uv run ruff check services
+
+      - name: Mypy services
+        run: uv run mypy services
+
+  unit-tests:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run unit tests
+        run: uv run pytest tests/
+
+  eval-regression:
+    name: eval-regression
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    timeout-minutes: 45
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      QDRANT_URL: ${{ secrets.QDRANT_URL || 'http://qdrant:6333' }}
+      REDIS_URL: ${{ secrets.REDIS_URL || 'redis://redis:6379' }}
+      CURRENT_REPORT: eval/results/current_report.json
+      BASELINE_REPORT: eval/datasets/baseline_report.json
+      COMPOSE_FILE: infra/docker-compose.yml
+      COMPOSE_CI_FILE: ${{ runner.temp }}/docker-compose.ci.yml
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Write CI environment
+        run: |
+          cat > infra/.env <<EOF
+          OPENAI_API_KEY=${OPENAI_API_KEY}
+          QDRANT_URL=${QDRANT_URL}
+          REDIS_URL=${REDIS_URL}
+          RERANKER_URL=http://reranker:8001
+          INGESTION_URL=http://ingestion:8002
+          API_PORT=8000
+          RERANKER_PORT=8001
+          QDRANT_PORT=6333
+          EOF
+
+      - name: Write CI compose override
+        run: |
+          cat > "${COMPOSE_CI_FILE}" <<'EOF'
+          services:
+            redis:
+              ports:
+                - "6379:6379"
+          EOF
+
+      - name: Start full stack
+        run: docker compose -f "${COMPOSE_FILE}" -f "${COMPOSE_CI_FILE}" up -d --build api ingestion reranker qdrant redis
+
+      - name: Wait for API and reranker health
+        run: |
+          for attempt in {1..60}; do
+            if curl -fsS http://localhost:8000/health >/dev/null && \
+               curl -fsS -X POST http://localhost:8001/health >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+
+          docker compose -f "${COMPOSE_FILE}" -f "${COMPOSE_CI_FILE}" ps
+          docker compose -f "${COMPOSE_FILE}" -f "${COMPOSE_CI_FILE}" logs api reranker
+          exit 1
+
+      - name: Ingest test corpus
+        run: |
+          shopt -s globstar nullglob
+          files=(eval/datasets/test_corpus/**/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No files found in eval/datasets/test_corpus/" >&2
+            exit 1
+          fi
+
+          for file in "${files[@]}"; do
+            if [ -f "${file}" ]; then
+              curl --fail-with-body \
+                -X POST http://localhost:8000/ingest \
+                -F "tenant_id=default" \
+                -F "file=@${file}"
+            fi
+          done
+
+      - name: Run eval
+        run: |
+          uv run rag-eval run \
+            --dataset eval/datasets/golden.jsonl \
+            --api-url http://localhost:8000 \
+            --output-dir eval/results
+
+          latest_report="$(ls -t eval/results/eval_*.json | head -n 1)"
+          cp "${latest_report}" "${CURRENT_REPORT}"
+
+      - name: Compare against baseline
+        run: |
+          set -o pipefail
+          uv run rag-eval compare \
+            --baseline "${BASELINE_REPORT}" \
+            --current "${CURRENT_REPORT}" \
+            | tee eval/results/compare.txt
+
+      - name: Write eval job summary
+        if: always()
+        run: |
+          python <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary_path = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          report_path = Path(os.environ["CURRENT_REPORT"])
+          compare_path = Path("eval/results/compare.txt")
+
+          with summary_path.open("a", encoding="utf-8") as summary:
+              summary.write("## RAG Eval Summary\n\n")
+              if not report_path.exists():
+                  summary.write(f"No eval report found at `{report_path}`.\n")
+                  raise SystemExit(0)
+
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              rows = [("overall", report)]
+              rows.extend((category, metrics) for category, metrics in report.get("by_category", {}).items())
+
+              summary.write("| Scope | Samples | Context Recall | Context Precision | Faithfulness | Answer Relevance | Hallucination Risk |\n")
+              summary.write("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+              for scope, metrics in rows:
+                  samples = metrics.get("n_samples", metrics.get("count", 0))
+                  summary.write(
+                      f"| {scope} | {samples} | "
+                      f"{float(metrics.get('mean_context_recall', metrics.get('context_recall', 0.0))):.3f} | "
+                      f"{float(metrics.get('mean_context_precision', metrics.get('context_precision', 0.0))):.3f} | "
+                      f"{float(metrics.get('mean_faithfulness', metrics.get('faithfulness', 0.0))):.3f} | "
+                      f"{float(metrics.get('mean_answer_relevance', metrics.get('answer_relevance', 0.0))):.3f} | "
+                      f"{metrics.get('hallucination_risk_count', 0)} |\n"
+                  )
+
+              if compare_path.exists():
+                  summary.write("\n## Baseline Comparison\n\n```text\n")
+                  summary.write(compare_path.read_text(encoding="utf-8"))
+                  summary.write("\n```\n")
+          PY
+
+      - name: Update rolling baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp "${CURRENT_REPORT}" "${BASELINE_REPORT}"
+
+      - name: Commit updated baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update eval baseline"
+          file_pattern: eval/datasets/baseline_report.json
+
+      - name: Stop full stack
+        if: always()
+        run: docker compose -f "${COMPOSE_FILE}" -f "${COMPOSE_CI_FILE}" down -v
