@@ -1,0 +1,47 @@
+# Dokploy deployment — placeholder configuration.
+# Copy infra/.env.example to .env and fill in values before deploying.
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - .env
+    depends_on:
+      - qdrant
+      - reranker
+    restart: unless-stopped
+
+  ingestion:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/ingestion.Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+
+  reranker:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/reranker.Dockerfile
+    ports:
+      - "${RERANKER_PORT:-8001}:8001"
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
