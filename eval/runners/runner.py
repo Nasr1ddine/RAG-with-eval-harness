@@ -57,15 +57,22 @@ class EvalReport:
 class EvalRunner:
     def __init__(
         self,
-        api_base_url: str,
         dataset_path: str,
         output_dir: str,
         parallelism: int = 4,
+        *,
+        api_base_url: str | None = None,
+        use_direct: bool = False,
     ) -> None:
         if parallelism < 1:
             raise ValueError("parallelism must be at least 1")
+        if use_direct and api_base_url is not None:
+            raise ValueError("use_direct cannot be combined with api_base_url")
+        if not use_direct and api_base_url is None:
+            raise ValueError("api_base_url is required unless use_direct is set")
 
-        self.api_base_url = api_base_url.rstrip("/")
+        self.api_base_url = api_base_url.rstrip("/") if api_base_url is not None else None
+        self.use_direct = use_direct
         self.dataset_path = dataset_path
         self.output_dir = Path(output_dir)
         self.parallelism = parallelism
@@ -74,16 +81,42 @@ class EvalRunner:
     async def run_eval(self, dataset: list[EvalSample]) -> EvalReport:
         semaphore = asyncio.Semaphore(self.parallelism)
 
-        async with httpx.AsyncClient(base_url=self.api_base_url, timeout=60.0) as client:
-            tasks = [self._evaluate_sample(sample, client, semaphore) for sample in dataset]
+        if self.use_direct:
+            from services.api.pipeline import QueryRequest
+            from services.api.runtime import initialize_runtime, run_query
+
+            await initialize_runtime()
+            tasks = [
+                self._evaluate_sample_direct(sample, run_query, QueryRequest, semaphore)
+                for sample in dataset
+            ]
             results = list(await asyncio.gather(*tasks))
+        else:
+            async with httpx.AsyncClient(base_url=self.api_base_url, timeout=60.0) as client:
+                tasks = [
+                    self._evaluate_sample_http(sample, client, semaphore) for sample in dataset
+                ]
+                results = list(await asyncio.gather(*tasks))
 
         report = self._build_report(results)
         self._save_report(report)
         self._print_summary(report)
         return report
 
-    async def _evaluate_sample(
+    async def _evaluate_sample_direct(
+        self,
+        sample: EvalSample,
+        run_query: Any,
+        query_request_cls: Any,
+        semaphore: asyncio.Semaphore,
+    ) -> EvalResult:
+        async with semaphore:
+            response = await run_query(
+                query_request_cls(query=sample.query, tenant_id=sample.tenant_id)
+            )
+            return await self._evaluate_payload(sample, response.model_dump())
+
+    async def _evaluate_sample_http(
         self,
         sample: EvalSample,
         client: httpx.AsyncClient,
@@ -96,27 +129,35 @@ class EvalRunner:
             )
             response.raise_for_status()
             payload = response.json()
+            if not isinstance(payload, dict):
+                raise TypeError("API query response must be a JSON object")
+            return await self._evaluate_payload(sample, payload)
 
-            retrieved_chunk_ids, scores, context = _extract_retrieval_payload(payload, sample)
-            recall = context_recall(retrieved_chunk_ids, sample.relevant_chunk_ids)
-            precision = context_precision(retrieved_chunk_ids, sample.relevant_chunk_ids, scores)
+    async def _evaluate_payload(
+        self,
+        sample: EvalSample,
+        payload: Mapping[str, Any],
+    ) -> EvalResult:
+        retrieved_chunk_ids, scores, context = _extract_retrieval_payload(payload, sample)
+        recall = context_recall(retrieved_chunk_ids, sample.relevant_chunk_ids)
+        precision = context_precision(retrieved_chunk_ids, sample.relevant_chunk_ids, scores)
 
-            answer = _string_value(payload, "answer")
-            faithfulness_score, relevance_score = await asyncio.gather(
-                faithfulness(answer, context),
-                answer_relevance(sample.query, answer),
-            )
+        answer = _string_value(payload, "answer")
+        faithfulness_score, relevance_score = await asyncio.gather(
+            faithfulness(answer, context),
+            answer_relevance(sample.query, answer),
+        )
 
-            return EvalResult(
-                sample_id=sample.id,
-                context_recall=recall,
-                context_precision=precision,
-                faithfulness=faithfulness_score,
-                answer_relevance=relevance_score,
-                latency_ms=float(payload.get("latency_ms", 0.0)),
-                cache_hit=bool(payload.get("cache_hit", False)),
-                category=sample.category,
-            )
+        return EvalResult(
+            sample_id=sample.id,
+            context_recall=recall,
+            context_precision=precision,
+            faithfulness=faithfulness_score,
+            answer_relevance=relevance_score,
+            latency_ms=float(payload.get("latency_ms", 0.0)),
+            cache_hit=bool(payload.get("cache_hit", False)),
+            category=sample.category,
+        )
 
     def _build_report(self, results: list[EvalResult]) -> EvalReport:
         timestamp = datetime.now(UTC).isoformat()
@@ -203,10 +244,7 @@ def _extract_retrieval_payload(
 
 def _source_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     raw_sources = (
-        payload.get("sources")
-        or payload.get("retrieved_chunks")
-        or payload.get("chunks")
-        or []
+        payload.get("sources") or payload.get("retrieved_chunks") or payload.get("chunks") or []
     )
     if not isinstance(raw_sources, Sequence) or isinstance(raw_sources, str):
         return []

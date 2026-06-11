@@ -31,9 +31,15 @@ def cli() -> None:
 )
 @click.option(
     "--api-url",
-    required=True,
     type=str,
-    help="Base URL for the RAG API.",
+    default=None,
+    help="Base URL for a legacy HTTP RAG API (optional).",
+)
+@click.option(
+    "--direct",
+    is_flag=True,
+    default=False,
+    help="Run queries in-process against the RAG pipeline.",
 )
 @click.option(
     "--output-dir",
@@ -49,14 +55,24 @@ def cli() -> None:
     type=click.IntRange(min=1),
     help="Maximum number of samples to evaluate concurrently.",
 )
-def run(dataset_path: str, api_url: str, output_dir: str, parallelism: int) -> None:
-    """Run an eval dataset against a live API."""
+def run(
+    dataset_path: str,
+    api_url: str | None,
+    direct: bool,
+    output_dir: str,
+    parallelism: int,
+) -> None:
+    """Run an eval dataset against the RAG pipeline."""
+    if not direct and api_url is None:
+        raise click.ClickException("Provide --api-url or use --direct.")
+
     dataset = load_dataset(dataset_path)
     runner = EvalRunner(
-        api_base_url=api_url,
         dataset_path=dataset_path,
         output_dir=output_dir,
         parallelism=parallelism,
+        api_base_url=api_url,
+        use_direct=direct,
     )
     report = asyncio.run(runner.run_eval(dataset))
     if not report.passed:

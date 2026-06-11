@@ -19,8 +19,7 @@ This project is a **multi-service Docker Compose stack**. Do not deploy it as a 
 ## Verify
 
 - Web UI: `https://your-domain/`
-- Health: `https://your-domain/health` → `{"status":"ok"}`
-- API docs: `https://your-domain/docs`
+- Health: `https://your-domain/_stcore/health`
 
 ## Server sizing
 

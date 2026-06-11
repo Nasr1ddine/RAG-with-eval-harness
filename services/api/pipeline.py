@@ -7,12 +7,12 @@ from typing import Any
 import httpx
 import structlog
 import tiktoken
-from fastapi import HTTPException
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from services.api.cache import SemanticCache
 from services.api.config import settings
+from services.api.errors import ServiceUnavailableError
 from services.api.observability import request_context_headers
 from services.api.retrieval import ExpandedChunk, HybridRetriever, ParentExpander, RetrievedChunk
 
@@ -165,13 +165,13 @@ class RAGPipeline:
             response.raise_for_status()
             response_payload: Any = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail="Reranker service unavailable") from exc
+            raise ServiceUnavailableError("Reranker service unavailable") from exc
 
         ranked_items = (
             response_payload.get("ranked") if isinstance(response_payload, dict) else None
         )
         if not isinstance(ranked_items, list):
-            raise HTTPException(status_code=503, detail="Reranker service unavailable")
+            raise ServiceUnavailableError("Reranker service unavailable")
 
         candidates_by_id = {candidate.chunk_id: candidate for candidate in candidates}
         ranked: list[RetrievedChunk] = []
@@ -195,7 +195,7 @@ class RAGPipeline:
                     )
                 )
         except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail="Reranker service unavailable") from exc
+            raise ServiceUnavailableError("Reranker service unavailable") from exc
 
         ranked.extend(candidate for candidate in candidates if candidate.chunk_id not in seen_ids)
         return ranked[:top_k]
@@ -223,9 +223,7 @@ class RAGPipeline:
         return truncated_context, self._token_count(truncated_context), selected
 
     def _format_context(self, chunks: list[ExpandedChunk]) -> str:
-        return "\n\n".join(
-            f"[{chunk.chunk_id}]\n{chunk.parent_text.strip()}" for chunk in chunks
-        )
+        return "\n\n".join(f"[{chunk.chunk_id}]\n{chunk.parent_text.strip()}" for chunk in chunks)
 
     async def _generate_answer(self, query: str, context: str) -> str:
         response = await self.llm_client.chat.completions.create(

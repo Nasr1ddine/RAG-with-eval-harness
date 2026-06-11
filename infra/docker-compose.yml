@@ -7,6 +7,10 @@ services:
     build:
       context: ..
       dockerfile: infra/dockerfiles/api.Dockerfile
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      PORT: "8000"
     env_file:
       - path: .env
         required: false

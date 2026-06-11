@@ -7,12 +7,12 @@ from typing import Any
 
 import bm25s  # type: ignore[import-not-found,import-untyped]
 import httpx
-from fastapi import HTTPException
 from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from services.api.config import settings
+from services.api.errors import ServiceUnavailableError
 from services.ingestion.chunker import Chunk
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,7 @@ async def rerank_chunks(query: str, candidates: list[RetrievedChunk]) -> list[Re
     payload = {
         "query": query,
         "candidates": [
-            {"id": candidate.chunk_id, "text": candidate.text}
-            for candidate in limited_candidates
+            {"id": candidate.chunk_id, "text": candidate.text} for candidate in limited_candidates
         ],
     }
 
@@ -59,10 +58,7 @@ async def rerank_chunks(query: str, candidates: list[RetrievedChunk]) -> list[Re
             response.raise_for_status()
             response_payload: Any = response.json()
     except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Reranker service unavailable",
-        ) from exc
+        raise ServiceUnavailableError("Reranker service unavailable") from exc
 
     return _ranked_chunks_from_response(response_payload, limited_candidates)
 
@@ -73,7 +69,7 @@ def _ranked_chunks_from_response(
 ) -> list[RetrievedChunk]:
     ranked_items = response_payload.get("ranked") if isinstance(response_payload, dict) else None
     if not isinstance(ranked_items, list):
-        raise HTTPException(status_code=503, detail="Reranker service unavailable")
+        raise ServiceUnavailableError("Reranker service unavailable")
 
     candidates_by_id = {candidate.chunk_id: candidate for candidate in candidates}
     ranked_chunks: list[RetrievedChunk] = []
@@ -92,7 +88,7 @@ def _ranked_chunks_from_response(
             seen_ids.add(chunk_id)
             ranked_chunks.append(replace(candidate, score=float(item["score"])))
     except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Reranker service unavailable") from exc
+        raise ServiceUnavailableError("Reranker service unavailable") from exc
 
     ranked_chunks.extend(
         candidate for candidate in candidates if candidate.chunk_id not in seen_ids
