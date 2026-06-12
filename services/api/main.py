@@ -1,20 +1,26 @@
 from __future__ import annotations
 
-import asyncio
+import atexit
 
 import streamlit as st
 
 from services.api.config import settings
 from services.api.errors import ServiceUnavailableError
 from services.api.pipeline import QueryRequest, QueryResponse
-from services.api.runtime import RuntimeResources, ingest_document, initialize_runtime, run_query
+from services.api.runtime import (
+    AsyncRuntimeRunner,
+    close_sync_runtime_runner,
+    get_sync_runtime_runner,
+)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 
 
 @st.cache_resource
-def _load_runtime() -> RuntimeResources:
-    return asyncio.run(initialize_runtime())
+def _load_runtime() -> AsyncRuntimeRunner:
+    runtime = get_sync_runtime_runner()
+    atexit.register(close_sync_runtime_runner)
+    return runtime
 
 
 def main() -> None:
@@ -23,17 +29,16 @@ def main() -> None:
     st.caption("Upload documents and ask questions grounded in your content.")
 
     runtime = _load_runtime()
-    _ = runtime  # Keep runtime warm for the session.
 
     tenant_id = st.sidebar.text_input("Tenant ID", value=settings.DEFAULT_TENANT_ID)
     tenant_id = tenant_id.strip() or settings.DEFAULT_TENANT_ID
 
-    _render_upload_section(tenant_id)
+    _render_upload_section(runtime, tenant_id)
     st.divider()
-    _render_chat_section(tenant_id)
+    _render_chat_section(runtime, tenant_id)
 
 
-def _render_upload_section(tenant_id: str) -> None:
+def _render_upload_section(runtime: AsyncRuntimeRunner, tenant_id: str) -> None:
     st.subheader("Upload document")
     st.caption("Supported: PDF, DOCX, TXT, MD")
 
@@ -55,13 +60,11 @@ def _render_upload_section(tenant_id: str) -> None:
     if st.button("Upload", type="primary"):
         with st.spinner("Ingesting document..."):
             try:
-                result = asyncio.run(
-                    ingest_document(
-                        filename=uploaded_file.name,
-                        content=uploaded_file.getvalue(),
-                        content_type=uploaded_file.type or "application/octet-stream",
-                        tenant_id=tenant_id,
-                    )
+                result = runtime.ingest_document(
+                    filename=uploaded_file.name,
+                    content=uploaded_file.getvalue(),
+                    content_type=uploaded_file.type or "application/octet-stream",
+                    tenant_id=tenant_id,
                 )
             except ServiceUnavailableError as exc:
                 st.error(str(exc))
@@ -73,7 +76,7 @@ def _render_upload_section(tenant_id: str) -> None:
         st.success(f"Ingested {child_count} chunks ({parent_count} parents) in {duration:.1f}s.")
 
 
-def _render_chat_section(tenant_id: str) -> None:
+def _render_chat_section(runtime: AsyncRuntimeRunner, tenant_id: str) -> None:
     st.subheader("Ask a question")
 
     if "messages" not in st.session_state:
@@ -93,9 +96,7 @@ def _render_chat_section(tenant_id: str) -> None:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    response = asyncio.run(
-                        run_query(QueryRequest(query=prompt, tenant_id=tenant_id))
-                    )
+                    response = runtime.query(QueryRequest(query=prompt, tenant_id=tenant_id))
                 except ServiceUnavailableError as exc:
                     answer = f"Error: {exc}"
                     st.markdown(answer)

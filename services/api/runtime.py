@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from collections.abc import Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 import structlog
@@ -22,6 +24,7 @@ from services.api.retrieval import HybridRetriever, ParentExpander
 
 configure_logging(service_name="api", log_level=settings.LOG_LEVEL, environment=settings.ENV)
 logger = structlog.get_logger(__name__)
+T = TypeVar("T")
 
 
 @dataclass
@@ -33,6 +36,7 @@ class RuntimeResources:
 
 
 _runtime: RuntimeResources | None = None
+_sync_runner: AsyncRuntimeRunner | None = None
 
 
 async def initialize_runtime() -> RuntimeResources:
@@ -138,7 +142,7 @@ async def ingest_document(
 
 
 def run_query_sync(request: QueryRequest) -> QueryResponse:
-    return asyncio.run(_run_query_with_runtime(request))
+    return get_sync_runtime_runner().query(request)
 
 
 def ingest_document_sync(
@@ -148,14 +152,86 @@ def ingest_document_sync(
     content_type: str,
     tenant_id: str,
 ) -> dict[str, Any]:
-    return asyncio.run(
-        _ingest_document_with_runtime(
-            filename=filename,
-            content=content,
-            content_type=content_type,
-            tenant_id=tenant_id,
-        )
+    return get_sync_runtime_runner().ingest_document(
+        filename=filename,
+        content=content,
+        content_type=content_type,
+        tenant_id=tenant_id,
     )
+
+
+class AsyncRuntimeRunner:
+    """Synchronous bridge that keeps async clients on one event loop."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="rag-api-runtime",
+            daemon=True,
+        )
+        self._closed = False
+        self._thread.start()
+        self.runtime = self._run(initialize_runtime())
+
+    def query(self, request: QueryRequest) -> QueryResponse:
+        return self._run(run_query(request))
+
+    def ingest_document(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str,
+        tenant_id: str,
+    ) -> dict[str, Any]:
+        return self._run(
+            ingest_document(
+                filename=filename,
+                content=content,
+                content_type=content_type,
+                tenant_id=tenant_id,
+            )
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+
+        try:
+            self._run(shutdown_runtime())
+        finally:
+            self._closed = True
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=5.0)
+            self._loop.close()
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def _run(self, coroutine: Coroutine[Any, Any, T]) -> T:
+        if self._closed:
+            raise RuntimeError("RAG runtime runner is closed")
+
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        return future.result()
+
+
+def get_sync_runtime_runner() -> AsyncRuntimeRunner:
+    global _sync_runner
+    if _sync_runner is None or _sync_runner._closed:
+        _sync_runner = AsyncRuntimeRunner()
+    return _sync_runner
+
+
+def close_sync_runtime_runner() -> None:
+    global _sync_runner
+    if _sync_runner is None:
+        return
+
+    _sync_runner.close()
+    _sync_runner = None
 
 
 async def _run_query_with_runtime(request: QueryRequest) -> QueryResponse:
