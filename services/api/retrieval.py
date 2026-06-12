@@ -190,16 +190,16 @@ class HybridRetriever:
         limit: int,
     ) -> list[RetrievedChunk]:
         query_vector = self._embed_query(query)
-        points = self.client.search(
+        result = self.client.query_points(
             collection_name=self.children_collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=self._tenant_filter(tenant_id),
             limit=limit,
             with_payload=True,
         )
 
         chunks: list[RetrievedChunk] = []
-        for point in points:
+        for point in result.points:
             chunk = self._point_to_retrieved_chunk(point, tenant_id, score=0.0)
             if chunk is not None:
                 chunks.append(chunk)
