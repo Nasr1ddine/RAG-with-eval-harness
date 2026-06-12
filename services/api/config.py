@@ -1,6 +1,6 @@
 from typing import Self
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,7 +50,15 @@ class Settings(BaseSettings):
 
     # Observability
     LOG_LEVEL: str = "INFO"
-    ENABLE_TRACING: bool = True
+    METRICS_HOST: str = "0.0.0.0"
+    METRICS_PORT: int | None = 8003
+
+    @field_validator("METRICS_PORT", mode="before")
+    @classmethod
+    def empty_metrics_port_disables_exporter(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
     @model_validator(mode="after")
     def resolve_listening_port(self) -> Self:

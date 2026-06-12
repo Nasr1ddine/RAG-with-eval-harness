@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 import httpx
@@ -47,11 +47,24 @@ class EvalReport:
     hallucination_risk_count: int
     samples: list[EvalResult]
     passed: bool
+    ragas_summary: dict[str, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["samples"] = [asdict(sample) for sample in self.samples]
         return payload
+
+
+class _PandasSeries(Protocol):
+    def mean(self) -> float: ...
+
+
+class _PandasFrame(Protocol):
+    def __getitem__(self, key: str) -> _PandasSeries: ...
+
+
+class _RagasResult(Protocol):
+    def to_pandas(self) -> _PandasFrame: ...
 
 
 class EvalRunner:
@@ -63,6 +76,7 @@ class EvalRunner:
         *,
         api_base_url: str | None = None,
         use_direct: bool = False,
+        use_ragas: bool = False,
     ) -> None:
         if parallelism < 1:
             raise ValueError("parallelism must be at least 1")
@@ -76,6 +90,7 @@ class EvalRunner:
         self.dataset_path = dataset_path
         self.output_dir = Path(output_dir)
         self.parallelism = parallelism
+        self.use_ragas = use_ragas
         self.console = Console()
 
     async def run_eval(self, dataset: list[EvalSample]) -> EvalReport:
@@ -92,13 +107,20 @@ class EvalRunner:
             ]
             results = list(await asyncio.gather(*tasks))
         else:
-            async with httpx.AsyncClient(base_url=self.api_base_url, timeout=60.0) as client:
+            api_base_url = self.api_base_url
+            if api_base_url is None:
+                raise ValueError("api_base_url is required unless use_direct is set")
+            async with httpx.AsyncClient(base_url=api_base_url, timeout=60.0) as client:
                 tasks = [
                     self._evaluate_sample_http(sample, client, semaphore) for sample in dataset
                 ]
                 results = list(await asyncio.gather(*tasks))
 
-        report = self._build_report(results)
+        ragas_summary: dict[str, float] | None = None
+        if self.use_ragas:
+            ragas_summary = await self._run_ragas(dataset, results)
+
+        report = self._build_report(results, ragas_summary)
         self._save_report(report)
         self._print_summary(report)
         return report
@@ -143,6 +165,7 @@ class EvalRunner:
         precision = context_precision(retrieved_chunk_ids, sample.relevant_chunk_ids, scores)
 
         answer = _string_value(payload, "answer")
+        contexts = context.split("\n\n") if context else []
         faithfulness_score, relevance_score = await asyncio.gather(
             faithfulness(answer, context),
             answer_relevance(sample.query, answer),
@@ -157,9 +180,54 @@ class EvalRunner:
             latency_ms=float(payload.get("latency_ms", 0.0)),
             cache_hit=bool(payload.get("cache_hit", False)),
             category=sample.category,
+            answer=answer,
+            contexts=contexts,
         )
 
-    def _build_report(self, results: list[EvalResult]) -> EvalReport:
+    async def _run_ragas(
+        self,
+        dataset: list[EvalSample],
+        results: list[EvalResult],
+    ) -> dict[str, float]:
+        try:
+            from ragas import evaluate  # type: ignore[import-not-found]
+            from ragas.metrics import (  # type: ignore[import-not-found]
+                answer_relevancy,
+                context_recall,
+                faithfulness,
+            )
+
+            from datasets import Dataset  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError("ragas is not installed. Run: pip install ragas datasets") from exc
+
+        ragas_hf_dataset = Dataset.from_dict(
+            {
+                "question": [sample.query for sample in dataset],
+                "answer": [result.answer for result in results],
+                "contexts": [result.contexts for result in results],
+                "ground_truth": [sample.ground_truth_answer for sample in dataset],
+            }
+        )
+        ragas_result = cast(
+            _RagasResult,
+            evaluate(
+                dataset=ragas_hf_dataset,
+                metrics=[faithfulness, context_recall, answer_relevancy],
+            ),
+        )
+        ragas_scores = ragas_result.to_pandas()
+        return {
+            "ragas_faithfulness": float(ragas_scores["faithfulness"].mean()),
+            "ragas_context_recall": float(ragas_scores["context_recall"].mean()),
+            "ragas_answer_relevancy": float(ragas_scores["answer_relevancy"].mean()),
+        }
+
+    def _build_report(
+        self,
+        results: list[EvalResult],
+        ragas_summary: dict[str, float] | None = None,
+    ) -> EvalReport:
         timestamp = datetime.now(UTC).isoformat()
         overall = _summarize(results)
         by_category = _summarize_by_category(results)
@@ -185,6 +253,7 @@ class EvalRunner:
             ),
             samples=results,
             passed=passed,
+            ragas_summary=ragas_summary,
         )
 
     def _save_report(self, report: EvalReport) -> Path:
@@ -229,6 +298,14 @@ class EvalRunner:
             )
 
         self.console.print(table)
+
+        if report.ragas_summary is not None:
+            ragas_table = Table(title="RAGAS Scores")
+            ragas_table.add_column("Metric")
+            ragas_table.add_column("Score", justify="right")
+            for metric, score in report.ragas_summary.items():
+                ragas_table.add_row(metric, _format_score(score))
+            self.console.print(ragas_table)
 
 
 def _extract_retrieval_payload(

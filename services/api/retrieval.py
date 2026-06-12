@@ -117,9 +117,14 @@ class HybridRetriever:
         self.candidate_k = settings.RETRIEVAL_CANDIDATE_K if candidate_k is None else candidate_k
         self._bm25: Any | None = None
         self._bm25_chunks: list[Chunk] = []
+        self._warned_empty_bm25 = False
 
         if chunks is not None:
             self.rebuild_index(chunks)
+
+    @property
+    def bm25_corpus_size(self) -> int:
+        return len(self._bm25_chunks)
 
     def rebuild_index(self, chunks: list[Chunk]) -> None:
         child_chunks = [chunk for chunk in chunks if chunk.metadata.get("chunk_type") == "child"]
@@ -127,6 +132,7 @@ class HybridRetriever:
             child_chunks = chunks
 
         self._bm25_chunks = child_chunks
+        self._warned_empty_bm25 = False
         if not child_chunks:
             self._bm25 = None
             return
@@ -134,6 +140,26 @@ class HybridRetriever:
         tokenized_corpus = bm25s.tokenize([chunk.text for chunk in child_chunks])
         self._bm25 = bm25s.BM25()
         self._bm25.index(tokenized_corpus)
+
+    def rebuild_index_from_qdrant(self) -> int:
+        """Refresh BM25 from persisted child chunks after startup or ingestion."""
+        start_time = time.perf_counter()
+        chunks = self._load_child_chunks_from_qdrant()
+        self.rebuild_index(chunks)
+
+        log_context = {
+            "collection_name": self.children_collection_name,
+            "corpus_size": self.bm25_corpus_size,
+            "latency_seconds": round(time.perf_counter() - start_time, 4),
+        }
+        if self.bm25_corpus_size == 0:
+            logger.warning(
+                "bm25 index is empty; hybrid retrieval will run dense-only",
+                extra=log_context,
+            )
+        else:
+            logger.info("bm25 index rebuilt", extra=log_context)
+        return self.bm25_corpus_size
 
     def retrieve(self, query: str, tenant_id: str, top_k: int) -> list[RetrievedChunk]:
         start_time = time.perf_counter()
@@ -207,6 +233,12 @@ class HybridRetriever:
 
     def _bm25_search(self, query: str, tenant_id: str, limit: int) -> list[RetrievedChunk]:
         if self._bm25 is None or not self._bm25_chunks:
+            if not self._warned_empty_bm25:
+                logger.warning(
+                    "bm25 index is empty during retrieval; returning dense-only candidates",
+                    extra={"tenant_id": tenant_id},
+                )
+                self._warned_empty_bm25 = True
             return []
 
         query_tokens = bm25s.tokenize(query)
@@ -281,6 +313,58 @@ class HybridRetriever:
             input=query,
         )
         return response.data[0].embedding
+
+    def _load_child_chunks_from_qdrant(self) -> list[Chunk]:
+        if not self.client.collection_exists(self.children_collection_name):
+            return []
+
+        chunks: list[Chunk] = []
+        offset: Any | None = None
+        while True:
+            records, next_page = self.client.scroll(
+                collection_name=self.children_collection_name,
+                offset=offset,
+                limit=256,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for record in records:
+                chunk = self._record_to_chunk(record)
+                if chunk is not None:
+                    chunks.append(chunk)
+
+            if next_page is None:
+                break
+            offset = next_page
+
+        return chunks
+
+    def _record_to_chunk(self, record: Any) -> Chunk | None:
+        payload = record.payload or {}
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return None
+
+        tenant_id = self._payload_tenant_id(payload)
+        parent_id = payload.get("parent_id")
+        metadata = self._payload_metadata(
+            payload,
+            tenant_id=tenant_id or "",
+            parent_id=str(parent_id) if parent_id is not None else None,
+        )
+        if tenant_id is None:
+            metadata.pop("tenant_id", None)
+
+        token_count = payload.get("token_count")
+        if not isinstance(token_count, int):
+            token_count = 0
+
+        return Chunk(
+            id=str(record.id),
+            text=text,
+            metadata=metadata,
+            token_count=token_count,
+        )
 
     def _point_to_retrieved_chunk(
         self,

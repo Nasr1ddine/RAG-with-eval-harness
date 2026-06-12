@@ -9,6 +9,8 @@ services:
       dockerfile: infra/dockerfiles/api.Dockerfile
     ports:
       - "${API_PORT:-8000}:8000"
+    expose:
+      - "8003"
     environment:
       PORT: "8000"
     env_file:
@@ -28,6 +30,8 @@ services:
     env_file:
       - path: .env
         required: false
+    expose:
+      - "8002"
     depends_on:
       - qdrant
     restart: unless-stopped
@@ -39,6 +43,8 @@ services:
     env_file:
       - path: .env
         required: false
+    expose:
+      - "8001"
     restart: unless-stopped
 
   qdrant:

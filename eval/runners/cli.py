@@ -55,12 +55,18 @@ def cli() -> None:
     type=click.IntRange(min=1),
     help="Maximum number of samples to evaluate concurrently.",
 )
+@click.option(
+    "--ragas/--no-ragas",
+    default=False,
+    help="Also run RAGAS evaluation and append results to the report.",
+)
 def run(
     dataset_path: str,
     api_url: str | None,
     direct: bool,
     output_dir: str,
     parallelism: int,
+    ragas: bool,
 ) -> None:
     """Run an eval dataset against the RAG pipeline."""
     if not direct and api_url is None:
@@ -73,6 +79,7 @@ def run(
         parallelism=parallelism,
         api_base_url=api_url,
         use_direct=direct,
+        use_ragas=ragas,
     )
     report = asyncio.run(runner.run_eval(dataset))
     if not report.passed:

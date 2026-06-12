@@ -5,6 +5,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from services.ingestion.config import settings
 from services.ingestion.observability import (
@@ -17,6 +18,7 @@ from services.ingestion.pipeline import IngestionPipeline, IngestionResult
 configure_logging(service_name="ingestion", log_level=settings.LOG_LEVEL, environment=settings.ENV)
 
 app = FastAPI(title="Document Ingestion Service")
+Instrumentator().instrument(app).expose(app)
 app.add_middleware(
     RequestLoggingMiddleware,
     service_name="ingestion",

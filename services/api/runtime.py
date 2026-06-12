@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from services.api.cache import SemanticCache
 from services.api.config import settings
 from services.api.errors import ServiceUnavailableError
-from services.api.metrics import record_rag_request
+from services.api.metrics import record_rag_request, start_metrics_server
 from services.api.observability import (
     bind_tenant_context,
     configure_logging,
@@ -44,17 +44,20 @@ async def initialize_runtime() -> RuntimeResources:
     if _runtime is not None:
         return _runtime
 
+    start_metrics_server(host=settings.METRICS_HOST, port=settings.METRICS_PORT)
     llm_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     http_client = httpx.AsyncClient()
     cache = SemanticCache(embedding_client=llm_client)
+    retriever = HybridRetriever()
     pipeline = RAGPipeline(
-        retriever=HybridRetriever(),
+        retriever=retriever,
         expander=ParentExpander(tenant_id=settings.DEFAULT_TENANT_ID),
         cache=cache,
         reranker_client=http_client,
         llm_client=llm_client,
     )
 
+    await _refresh_bm25_index(retriever, reason="startup")
     await _warm_up_reranker(http_client)
 
     _runtime = RuntimeResources(
@@ -138,6 +141,12 @@ async def ingest_document(
     payload = response.json()
     if not isinstance(payload, dict):
         raise ServiceUnavailableError("Ingestion service returned an invalid response")
+    bm25_corpus_size = await _refresh_bm25_index(
+        runtime.pipeline.retriever,
+        reason="ingestion",
+        tenant_id=tenant_id,
+    )
+    payload["bm25_corpus_size"] = bm25_corpus_size
     return payload
 
 
@@ -267,6 +276,40 @@ async def _warm_up_reranker(http_client: httpx.AsyncClient) -> None:
         response.raise_for_status()
     except httpx.HTTPError as exc:
         logger.warning("reranker warmup failed", error=str(exc))
+
+
+async def _refresh_bm25_index(
+    retriever: HybridRetriever,
+    *,
+    reason: str,
+    tenant_id: str | None = None,
+) -> int:
+    try:
+        corpus_size = await asyncio.to_thread(retriever.rebuild_index_from_qdrant)
+    except Exception as exc:
+        logger.warning(
+            "bm25 index refresh failed; hybrid retrieval will run dense-only",
+            reason=reason,
+            tenant_id=tenant_id,
+            error=str(exc),
+        )
+        return retriever.bm25_corpus_size
+
+    if corpus_size == 0:
+        logger.warning(
+            "bm25 index health check found zero chunks; hybrid retrieval will run dense-only",
+            reason=reason,
+            tenant_id=tenant_id,
+            bm25_corpus_size=corpus_size,
+        )
+    else:
+        logger.info(
+            "bm25 index ready",
+            reason=reason,
+            tenant_id=tenant_id,
+            bm25_corpus_size=corpus_size,
+        )
+    return corpus_size
 
 
 def _error_detail(response: httpx.Response) -> Any:

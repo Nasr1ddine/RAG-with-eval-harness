@@ -79,6 +79,39 @@ Each service lives under `services/<name>/` with a `main.py` entrypoint.
 
 The `api` service no longer exposes a JSON REST API. The RAG pipeline runs in-process inside the Streamlit app and communicates with `ingestion` and `reranker` over HTTP on the internal Docker network.
 
+### Observability
+
+All services emit structured logs with request and tenant context. Prometheus scrape targets:
+
+```yaml
+scrape_configs:
+  - job_name: "rag-api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8003"]
+  - job_name: "rag-ingestion"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ingestion:8002"]
+  - job_name: "rag-reranker"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["reranker:8001"]
+```
+
+The `api` target exports custom RAG metrics from the Streamlit process on `METRICS_PORT`. The FastAPI services expose request metrics through `prometheus-fastapi-instrumentator`.
+
+### Ingestion Sources
+
+Current ingestion supports direct document uploads (`PDF`, `DOCX`, `TXT`, `MD`). Do not add new connectors speculatively: every connector adds ongoing maintenance for authentication, rate limits, schema changes, retries, and incremental sync.
+
+When users need multi-source ingestion, prioritize the minimum viable connectors:
+
+- S3/GCS blob stores, since enterprise documents commonly live in object storage.
+- URL/sitemap crawling, since this covers documentation sites, wikis, and public knowledge bases.
+
+Before building these connectors from scratch, evaluate the hosted `unstructured` API. The project already uses `unstructured` locally for parsing, and the hosted API can handle S3, GCS, and URL ingestion paths.
+
 ## Evaluation
 
 Golden datasets live in `eval/datasets/` (JSONL). Metrics and CI runners live under `eval/metrics/` and `eval/runners/`.
