@@ -12,6 +12,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libmagic1 \
+        libgl1 \
         poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
