@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 import tiktoken
 
@@ -47,13 +47,13 @@ class HierarchicalChunker:
         chunk_pairs: list[ChunkPair] = []
 
         for doc in docs:
-            source = doc.metadata.get("source", "unknown")
+            source = str(doc.metadata.get("source", "unknown"))
             for parent_index, parent_tokens in enumerate(
                 self._token_windows(doc.text, self.parent_size)
             ):
                 parent_text = self.encoding.decode(parent_tokens)
                 parent = Chunk(
-                    id=str(uuid4()),
+                    id=self._parent_id(source, parent_index),
                     text=parent_text,
                     metadata={
                         **doc.metadata,
@@ -85,7 +85,7 @@ class HierarchicalChunker:
         self,
         child_tokens: list[int],
         doc_metadata: dict[str, Any],
-        source: Any,
+        source: str,
         parent: Chunk,
         child_index: int,
         parent_summary: str,
@@ -95,7 +95,7 @@ class HierarchicalChunker:
         token_count = len(self.encoding.encode(prefixed_text))
 
         return Chunk(
-            id=str(uuid4()),
+            id=self._child_id(source, parent.metadata["parent_index"], child_index),
             text=prefixed_text,
             metadata={
                 **doc_metadata,
@@ -114,3 +114,9 @@ class HierarchicalChunker:
 
         step = chunk_size - self.overlap
         return [tokens[start : start + chunk_size] for start in range(0, len(tokens), step)]
+
+    def _parent_id(self, source: str, parent_index: int) -> str:
+        return str(uuid5(NAMESPACE_URL, f"{source}:parent:{parent_index}"))
+
+    def _child_id(self, source: str, parent_index: Any, child_index: int) -> str:
+        return str(uuid5(NAMESPACE_URL, f"{source}:parent:{parent_index}:child:{child_index}"))

@@ -116,7 +116,8 @@ Before building these connectors from scratch, evaluate the hosted `unstructured
 
 Golden datasets live in `eval/datasets/` (JSONL). Metrics and CI runners live under `eval/metrics/` and `eval/runners/`.
 
-Run eval directly against the in-process pipeline (no HTTP API required):
+Run eval directly against the in-process pipeline. The committed smoke dataset in
+`eval/datasets/golden.jsonl` matches the documents under `eval/datasets/test_corpus/`.
 
 ```bash
 uv run rag-eval run \
@@ -125,14 +126,9 @@ uv run rag-eval run \
   --output-dir eval/results
 ```
 
-Alternatively, point it at a running HTTP ingestion+query stack with `--api-url`:
-
-```bash
-uv run rag-eval run \
-  --dataset eval/datasets/golden.jsonl \
-  --api-url http://localhost:8000 \
-  --output-dir eval/results
-```
+The Streamlit `api` service does not expose a JSON `/query` endpoint. The `--api-url`
+option is retained only for compatibility with older deployments that still provide
+that endpoint; use `--direct` for this repository.
 
 Compare two reports:
 

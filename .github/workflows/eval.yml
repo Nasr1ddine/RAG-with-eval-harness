@@ -106,8 +106,8 @@ jobs:
         run: |
           cat > infra/.env <<EOF
           OPENAI_API_KEY=${OPENAI_API_KEY}
-          QDRANT_URL=${QDRANT_URL}
-          REDIS_URL=${REDIS_URL}
+          QDRANT_URL=http://qdrant:6333
+          REDIS_URL=redis://redis:6379
           RERANKER_URL=http://reranker:8001
           INGESTION_URL=http://ingestion:8002
           API_PORT=8000

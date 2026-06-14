@@ -146,6 +146,7 @@ async def ingest_document(
         reason="ingestion",
         tenant_id=tenant_id,
     )
+    payload["cache_entries_invalidated"] = await runtime.cache.invalidate_tenant(tenant_id)
     payload["bm25_corpus_size"] = bm25_corpus_size
     return payload
 

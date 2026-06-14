@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import streamlit as st
 
+from services.api.answer_eval import build_answer_eval
 from services.api.config import settings
 from services.api.errors import ServiceUnavailableError
 from services.api.pipeline import QueryRequest, QueryResponse
@@ -106,9 +107,10 @@ def _render_chat_section(runtime: AsyncRuntimeRunner, tenant_id: str) -> None:
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message.get("meta"):
-                st.caption(message["meta"])
+            if message["role"] == "assistant":
+                _render_assistant_message(message)
+            else:
+                st.markdown(message["content"])
 
     if prompt := st.chat_input("Ask something about your uploaded documents..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -127,9 +129,12 @@ def _render_chat_section(runtime: AsyncRuntimeRunner, tenant_id: str) -> None:
 
             answer = response.answer
             meta = _format_meta(response)
+            answer_eval = build_answer_eval(response)
             st.markdown(answer)
-            st.caption(meta)
-            st.session_state.messages.append({"role": "assistant", "content": answer, "meta": meta})
+            _render_answer_eval(answer_eval, meta)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer, "meta": meta, "eval": answer_eval}
+            )
 
 
 def _format_meta(response: QueryResponse) -> str:
@@ -138,6 +143,61 @@ def _format_meta(response: QueryResponse) -> str:
     if response.cache_hit:
         parts.append("cache hit")
     return " · ".join(parts)
+
+
+def _render_assistant_message(message: dict[str, Any]) -> None:
+    st.markdown(str(message["content"]))
+    answer_eval = message.get("eval")
+    meta = message.get("meta")
+    if isinstance(answer_eval, dict):
+        _render_answer_eval(answer_eval, str(meta or ""))
+    elif meta:
+        st.caption(str(meta))
+
+
+def _render_answer_eval(answer_eval: dict[str, Any], meta: str) -> None:
+    accuracy = _numeric_value(answer_eval, "accuracy")
+    status = _string_value(answer_eval, "status")
+    status_detail = _string_value(answer_eval, "status_detail")
+
+    summary_columns = st.columns([1, 1, 2])
+    summary_columns[0].metric("Estimated accuracy", f"{accuracy:.0%}")
+    summary_columns[1].metric("Eval", status)
+    summary_columns[2].caption(f"{status_detail} · {meta}" if meta else status_detail)
+    st.progress(min(1.0, max(0.0, accuracy)))
+
+    with st.expander("More details"):
+        st.caption(
+            "This is an estimated grounding score based on retrieval signals, source coverage, "
+            "reranking, cache status, and available context. It is not a ground-truth eval."
+        )
+
+        metrics = answer_eval.get("metrics", {})
+        if isinstance(metrics, dict):
+            metric_columns = st.columns(4)
+            metric_columns[0].metric("Sources", int(_numeric_value(metrics, "source_count")))
+            metric_columns[1].metric("Retrieved", int(_numeric_value(metrics, "retrieval_count")))
+            metric_columns[2].metric("Reranked", int(_numeric_value(metrics, "reranked_count")))
+            metric_columns[3].metric(
+                "Context tokens", int(_numeric_value(metrics, "context_tokens"))
+            )
+
+        components = answer_eval.get("components")
+        if isinstance(components, list) and components:
+            st.markdown("#### Quality Signals")
+            st.bar_chart(components, x="Signal", y="Score")
+            st.dataframe(components, hide_index=True, use_container_width=True)
+
+        sources = answer_eval.get("sources")
+        if isinstance(sources, list) and sources:
+            st.markdown("#### Source Scores")
+            st.bar_chart(sources, x="Source", y="Normalized score")
+            st.dataframe(sources, hide_index=True, use_container_width=True)
+
+        context_preview = _string_value(answer_eval, "context_preview")
+        if context_preview:
+            st.markdown("#### Context Preview")
+            st.code(context_preview, language="text")
 
 
 def _render_eval_section() -> None:

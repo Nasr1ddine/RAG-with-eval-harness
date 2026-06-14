@@ -23,6 +23,7 @@ class CacheHit:
     response: str
     query_text: str
     chunk_ids: list[str]
+    context: str
     similarity_score: float
     created_at: str
 
@@ -67,6 +68,7 @@ class SemanticCache:
         response: str,
         chunk_ids: list[str],
         tenant_id: str,
+        context: str = "",
     ) -> None:
         query_embedding = await self._embed_query(query)
         key = self._cache_key(query, tenant_id)
@@ -77,6 +79,7 @@ class SemanticCache:
                 "response": response,
                 "query_text": query,
                 "retrieved_chunk_ids": json.dumps(chunk_ids),
+                "context": context,
                 "created_at": datetime.now(UTC).isoformat(),
             },
         )
@@ -135,6 +138,7 @@ class SemanticCache:
                 response=row["response"],
                 query_text=row["query_text"],
                 chunk_ids=self._chunk_ids_from_row(row),
+                context=row.get("context", ""),
                 similarity_score=similarity_score,
                 created_at=row["created_at"],
             )

@@ -39,11 +39,13 @@ class QueryRequest(BaseModel):
 class QuerySource(BaseModel):
     chunk_id: str
     score: float
+    text: str = ""
 
 
 class QueryResponse(BaseModel):
     answer: str
     sources: list[QuerySource]
+    context: str = ""
     cache_hit: bool
     latency_ms: int
     retrieval_count: int
@@ -84,6 +86,7 @@ class RAGPipeline:
                     QuerySource(chunk_id=chunk_id, score=cache_hit.similarity_score)
                     for chunk_id in cache_hit.chunk_ids
                 ],
+                context=cache_hit.context,
                 cache_hit=True,
                 latency_ms=latency_ms,
                 retrieval_count=0,
@@ -104,7 +107,8 @@ class RAGPipeline:
         context, context_tokens, context_chunks = self._assemble_context(expanded)
         answer = await self._generate_answer(request.query, context)
         sources = [
-            QuerySource(chunk_id=chunk.chunk_id, score=chunk.score) for chunk in context_chunks
+            QuerySource(chunk_id=chunk.chunk_id, score=chunk.score, text=chunk.parent_text)
+            for chunk in context_chunks
         ]
 
         await self.cache.set(
@@ -112,11 +116,13 @@ class RAGPipeline:
             response=answer,
             chunk_ids=[source.chunk_id for source in sources],
             tenant_id=request.tenant_id,
+            context=context,
         )
 
         return QueryResponse(
             answer=answer,
             sources=sources,
+            context=context,
             cache_hit=False,
             latency_ms=self._latency_ms(start_time),
             retrieval_count=len(retrieved),

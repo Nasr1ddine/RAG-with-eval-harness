@@ -4,6 +4,7 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+
 from services.ingestion.chunker import Chunk
 from services.ingestion.config import settings
 
@@ -85,9 +86,7 @@ class QdrantIndexer:
 
     def _payload_for_chunk(self, chunk: Chunk, tenant_id: str) -> dict[str, Any]:
         metadata = {
-            key: value
-            for key, value in chunk.metadata.items()
-            if key != EMBEDDING_METADATA_KEY
+            key: value for key, value in chunk.metadata.items() if key != EMBEDDING_METADATA_KEY
         }
         chunk_type = metadata.get("chunk_type")
 
