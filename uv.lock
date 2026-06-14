@@ -2703,7 +2703,7 @@ wheels = [
 [[package]]
 name = "rag-system"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 
 [package.dev-dependencies]
 api = [
