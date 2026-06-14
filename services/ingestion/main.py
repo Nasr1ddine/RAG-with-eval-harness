@@ -24,6 +24,14 @@ app.add_middleware(
     service_name="ingestion",
     default_tenant_id=settings.DEFAULT_TENANT_ID,
 )
+_pipeline: IngestionPipeline | None = None
+
+
+def get_ingestion_pipeline() -> IngestionPipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = IngestionPipeline()
+    return _pipeline
 
 
 @app.post("/ingest", response_model=IngestionResult)
@@ -46,7 +54,7 @@ async def ingest_document(
         temp_file.write(await file.read())
 
     try:
-        pipeline = IngestionPipeline()
+        pipeline = get_ingestion_pipeline()
         return await pipeline.run(
             file_path=str(temp_path),
             metadata={

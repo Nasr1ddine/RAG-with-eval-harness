@@ -131,7 +131,13 @@ async def ingest_document(
             files=files,
             data=data,
             headers=request_context_headers(),
+            timeout=httpx.Timeout(settings.INGESTION_TIMEOUT_SECONDS, connect=10.0),
         )
+    except httpx.TimeoutException as exc:
+        raise ServiceUnavailableError(
+            "Ingestion is still processing or warming up. "
+            "Please try a smaller file or retry shortly."
+        ) from exc
     except httpx.HTTPError as exc:
         raise ServiceUnavailableError("Ingestion service unavailable") from exc
 

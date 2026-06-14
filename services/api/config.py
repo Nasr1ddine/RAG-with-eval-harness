@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # Ingestion service
     INGESTION_URL: str = "http://ingestion:8002"
+    INGESTION_TIMEOUT_SECONDS: float = 120.0
 
     # Semantic cache
     REDIS_URL: str = "redis://redis:6379"
