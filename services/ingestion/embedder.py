@@ -4,8 +4,9 @@ import json
 import logging
 
 from openai import AsyncOpenAI, RateLimitError
-from services.ingestion.config import settings
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+from services.ingestion.config import settings
 
 logger = logging.getLogger(__name__)
 

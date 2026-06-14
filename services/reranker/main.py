@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 
 from services.reranker.config import settings
@@ -47,6 +48,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Reranker Service", lifespan=lifespan)
+Instrumentator().instrument(app).expose(app)
 app.add_middleware(
     RequestLoggingMiddleware,
     service_name="reranker",

@@ -16,11 +16,16 @@ This project is a **multi-service Docker Compose stack**. Do not deploy it as a 
 5. Attach your domain **only to the `api` service** on port **8000**.
 6. Leave `ingestion`, `reranker`, `qdrant`, and `redis` on the internal Docker network (no public domains).
 
+> **Do not set `PORT` as a global/project environment variable.** Every service reads
+> `PORT` and uses it as its own listen port. A global `PORT=8000` forces `ingestion`
+> (and `reranker`) to bind to 8000 instead of their real ports, breaking the API's
+> internal calls. `PORT` is already scoped to the `api` service in
+> `infra/docker-compose.yml`; leave it there and out of the shared environment.
+
 ## Verify
 
 - Web UI: `https://your-domain/`
-- Health: `https://your-domain/health` → `{"status":"ok"}`
-- API docs: `https://your-domain/docs`
+- Health: `https://your-domain/_stcore/health`
 
 ## Server sizing
 

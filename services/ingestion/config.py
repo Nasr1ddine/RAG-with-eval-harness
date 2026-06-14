@@ -33,7 +33,6 @@ class Settings(BaseSettings):
 
     # Observability
     LOG_LEVEL: str = "INFO"
-    ENABLE_TRACING: bool = True
 
     @model_validator(mode="after")
     def resolve_listening_port(self) -> Self:

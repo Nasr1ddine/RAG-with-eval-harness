@@ -6,9 +6,9 @@ Production RAG monorepo with an evaluation harness.
 
 ```
 services/
-  api/          FastAPI query entrypoint
-  ingestion/    Document ingestion pipeline
-  reranker/     Cross-encoder reranker sidecar
+  api/          Streamlit web UI (document upload + chat)
+  ingestion/    Document ingestion pipeline (FastAPI)
+  reranker/     Cross-encoder reranker sidecar (FastAPI)
 eval/           DeepEval + RAGAS evaluation harness
 infra/          Docker Compose (Dokploy) and environment config
 scripts/        Development utilities
@@ -50,21 +50,93 @@ uv run mypy .
 uv run pytest
 ```
 
+### Run the Streamlit UI locally
+
+```bash
+uv sync --group api
+uv run streamlit run services/api/main.py --server.port=8000
+```
+
+Open [http://localhost:8000](http://localhost:8000). The sidebar lets you set a **Tenant ID**. Upload a document in the top section, then ask questions in the chat below.
+
+> The ingestion service must be running separately for uploads to work:
+> ```bash
+> uv sync --group ingestion
+> uv run python -m services.ingestion.main
+> ```
+
 ## Services
 
 Each service lives under `services/<name>/` with a `main.py` entrypoint.
 
-| Service    | Port | Role                                      |
-| ---------- | ---- | ----------------------------------------- |
-| `api`      | 8000 | Web UI, query, ingest proxy, health, metrics |
-| `ingestion`| 8002 | Document parsing, chunking, indexing      |
-| `reranker` | 8001 | Cross-encoder reranking sidecar           |
-| `qdrant`   | 6333 | Vector store                              |
-| `redis`    | 6379 | Semantic query cache                      |
+| Service     | Port | Role                                              |
+| ----------- | ---- | ------------------------------------------------- |
+| `api`       | 8000 | Streamlit web UI — document upload and chat       |
+| `ingestion` | 8002 | Document parsing, chunking, and vector indexing   |
+| `reranker`  | 8001 | Cross-encoder reranking sidecar                   |
+| `qdrant`    | 6333 | Vector store                                      |
+| `redis`     | 6379 | Semantic query cache                              |
+
+The `api` service no longer exposes a JSON REST API. The RAG pipeline runs in-process inside the Streamlit app and communicates with `ingestion` and `reranker` over HTTP on the internal Docker network.
+
+### Observability
+
+All services emit structured logs with request and tenant context. Prometheus scrape targets:
+
+```yaml
+scrape_configs:
+  - job_name: "rag-api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8003"]
+  - job_name: "rag-ingestion"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ingestion:8002"]
+  - job_name: "rag-reranker"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["reranker:8001"]
+```
+
+The `api` target exports custom RAG metrics from the Streamlit process on `METRICS_PORT`. The FastAPI services expose request metrics through `prometheus-fastapi-instrumentator`.
+
+### Ingestion Sources
+
+Current ingestion supports direct document uploads (`PDF`, `DOCX`, `TXT`, `MD`). Do not add new connectors speculatively: every connector adds ongoing maintenance for authentication, rate limits, schema changes, retries, and incremental sync.
+
+When users need multi-source ingestion, prioritize the minimum viable connectors:
+
+- S3/GCS blob stores, since enterprise documents commonly live in object storage.
+- URL/sitemap crawling, since this covers documentation sites, wikis, and public knowledge bases.
+
+Before building these connectors from scratch, evaluate the hosted `unstructured` API. The project already uses `unstructured` locally for parsing, and the hosted API can handle S3, GCS, and URL ingestion paths.
 
 ## Evaluation
 
 Golden datasets live in `eval/datasets/` (JSONL). Metrics and CI runners live under `eval/metrics/` and `eval/runners/`.
+
+Run eval directly against the in-process pipeline. The committed smoke dataset in
+`eval/datasets/golden.jsonl` matches the documents under `eval/datasets/test_corpus/`.
+
+```bash
+uv run rag-eval run \
+  --dataset eval/datasets/golden.jsonl \
+  --direct \
+  --output-dir eval/results
+```
+
+The Streamlit `api` service does not expose a JSON `/query` endpoint. The `--api-url`
+option is retained only for compatibility with older deployments that still provide
+that endpoint; use `--direct` for this repository.
+
+Compare two reports:
+
+```bash
+uv run rag-eval compare \
+  --baseline eval/datasets/baseline_report.json \
+  --current  eval/results/eval_<timestamp>.json
+```
 
 ## Deployment
 
@@ -81,17 +153,15 @@ docker compose up -d --build
 Verify:
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8000/_stcore/health
 open http://localhost:8000/
 ```
 
-The browser UI at `/` supports document upload and chat. JSON API routes (`/query`, `/ingest`, `/health`, `/metrics`) and OpenAPI docs at `/docs` remain unchanged.
-
 ### Dokploy
 
-**Do not use Application/Nixpacks mode.** Dokploy will guess `python -m rag-system`, which is not a valid entrypoint and will not start an HTTP server. Use **Compose** only.
+**Do not use Application/Nixpacks mode.** Dokploy will guess `python -m rag-system`, which is not a valid entrypoint. Use **Compose** only.
 
-See [`infra/DOKPLOY.md`](infra/DOKPLOY.md) for a full migration guide from Application mode.
+See [`infra/DOKPLOY.md`](infra/DOKPLOY.md) for the full guide.
 
 1. Create a **Compose** application in Dokploy and connect this repository.
 2. Set the compose file path to `infra/docker-compose.yml`.
@@ -99,10 +169,10 @@ See [`infra/DOKPLOY.md`](infra/DOKPLOY.md) for a full migration guide from Appli
    - `OPENAI_API_KEY`
    - `QDRANT_URL=http://qdrant:6333`
    - `REDIS_URL=redis://redis:6379`
-4. In Dokploy, attach your domain **only to the `api` service** on port `8000`.
+4. Attach your domain **only to the `api` service** on port `8000`.
 5. Keep `ingestion`, `reranker`, `qdrant`, and `redis` on the internal Docker network.
 
-After deploy, the public site is `https://your-domain/` (web UI). The API is on the same origin.
+After deploy, the public site is `https://your-domain/` (Streamlit UI).
 
 **Server sizing:** 2+ CPU cores and 8 GB RAM recommended (reranker model + Qdrant + PDF ingestion).
 

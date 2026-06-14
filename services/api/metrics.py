@@ -3,13 +3,24 @@
 #   - job_name: "rag-api"
 #     metrics_path: /metrics
 #     static_configs:
-#       - targets: ["api:8000"]
+#       - targets: ["api:8003"]
 
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+import threading
+
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+    start_http_server,
+)
 
 REGISTRY = CollectorRegistry(auto_describe=True)
+_METRICS_SERVER_LOCK = threading.Lock()
+_metrics_server_started = False
 
 RAG_REQUESTS_TOTAL = Counter(
     "rag_requests_total",
@@ -44,6 +55,18 @@ RAG_FAITHFULNESS_SCORE = Gauge(
 
 def render_metrics() -> bytes:
     return generate_latest(REGISTRY)
+
+
+def start_metrics_server(*, host: str, port: int | None) -> None:
+    if port is None:
+        return
+
+    global _metrics_server_started
+    with _METRICS_SERVER_LOCK:
+        if _metrics_server_started:
+            return
+        start_http_server(port, addr=host, registry=REGISTRY)
+        _metrics_server_started = True
 
 
 def record_rag_request(

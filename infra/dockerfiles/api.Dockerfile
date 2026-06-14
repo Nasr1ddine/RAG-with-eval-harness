@@ -18,6 +18,6 @@ COPY services ./services
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-EXPOSE 8000
+EXPOSE 8000 8003
 
-CMD ["python", "-m", "services.api.main"]
+CMD ["sh", "-c", "streamlit run services/api/main.py --server.port=${PORT:-8000} --server.address=${API_HOST:-0.0.0.0} --browser.gatherUsageStats=false --server.headless=true"]

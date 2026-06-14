@@ -5,6 +5,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from services.ingestion.config import settings
 from services.ingestion.observability import (
@@ -17,11 +18,20 @@ from services.ingestion.pipeline import IngestionPipeline, IngestionResult
 configure_logging(service_name="ingestion", log_level=settings.LOG_LEVEL, environment=settings.ENV)
 
 app = FastAPI(title="Document Ingestion Service")
+Instrumentator().instrument(app).expose(app)
 app.add_middleware(
     RequestLoggingMiddleware,
     service_name="ingestion",
     default_tenant_id=settings.DEFAULT_TENANT_ID,
 )
+_pipeline: IngestionPipeline | None = None
+
+
+def get_ingestion_pipeline() -> IngestionPipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = IngestionPipeline()
+    return _pipeline
 
 
 @app.post("/ingest", response_model=IngestionResult)
@@ -44,7 +54,7 @@ async def ingest_document(
         temp_file.write(await file.read())
 
     try:
-        pipeline = IngestionPipeline()
+        pipeline = get_ingestion_pipeline()
         return await pipeline.run(
             file_path=str(temp_path),
             metadata={

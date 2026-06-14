@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from unstructured.partition.auto import partition
+
 from services.ingestion.chunker import Document, HierarchicalChunker
 from services.ingestion.config import settings
 from services.ingestion.embedder import BatchEmbedder
 from services.ingestion.indexer import EMBEDDING_METADATA_KEY, QdrantIndexer
-from unstructured.partition.auto import partition
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 

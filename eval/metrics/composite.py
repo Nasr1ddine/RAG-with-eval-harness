@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +13,8 @@ class EvalResult:
     latency_ms: float
     cache_hit: bool
     category: str
+    answer: str = ""
+    contexts: list[str] = field(default_factory=list)
 
 
 MetricSummary = dict[str, float | int | bool]

@@ -1,0 +1,41 @@
+{
+  "run_id": "baseline-smoke",
+  "timestamp": "2026-06-14T00:00:00Z",
+  "dataset_path": "eval/datasets/golden.jsonl",
+  "n_samples": 1,
+  "mean_context_recall": 0.75,
+  "mean_context_precision": 0.7,
+  "mean_faithfulness": 0.8,
+  "mean_answer_relevance": 0.75,
+  "by_category": {
+    "support_policy": {
+      "count": 1,
+      "context_recall": 0.75,
+      "context_precision": 0.7,
+      "faithfulness": 0.8,
+      "answer_relevance": 0.75,
+      "latency_ms": 0.0,
+      "cache_hit_rate": 0.0,
+      "hallucination_risk_count": 0
+    }
+  },
+  "hallucination_risk_count": 0,
+  "samples": [
+    {
+      "sample_id": "acme-support-hours",
+      "context_recall": 0.75,
+      "context_precision": 0.7,
+      "faithfulness": 0.8,
+      "answer_relevance": 0.75,
+      "latency_ms": 0.0,
+      "cache_hit": false,
+      "category": "support_policy",
+      "answer": "Acme Cloud provides standard support Monday through Friday, 09:00 to 17:00 UTC.",
+      "contexts": [
+        "Acme Cloud provides standard support from Monday through Friday, 09:00 to 17:00 UTC."
+      ]
+    }
+  ],
+  "passed": true,
+  "ragas_summary": null
+}
